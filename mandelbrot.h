@@ -1,5 +1,8 @@
-// Fixed point with 4 bits to the left of the point.
-// Range [-8,8) with precision 2^-28
+// Init pico resources used for generation
+void mandel_init();
+
+// Fixed point with 6 bits to the left of the point.
+// Range [-32,32) with precision 2^-26
 typedef int32_t fixed_pt_t;
 
 // Make a fixed_pt_t from an int or float.
