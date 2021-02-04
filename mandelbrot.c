@@ -1,41 +1,58 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include "pico/stdlib.h"
-#include "hardware/pio.h"
 #include "hardware/interp.h"
 
-#define IMAGE_ROWS 33
-#define IMAGE_COLS 80
-
-uint16_t fractal_image[IMAGE_ROWS*IMAGE_COLS];
+// Cycle checking parameters
+#define MAX_CYCLE_LEN 8          // Must be power of 2
+#define MIN_CYCLE_CHECK_ITER 32  // Must be multiple of max cycle len
+#define CYCLE_TOLERANCE (1<<18)
 
 // Fixed point with 4 bits to the left of the point.
-// Range [-16,16) with precision 2^-27
+// Range [-8,8) with precision 2^-28
 typedef int32_t fixed_pt_t;
 
-fixed_pt_t mul(fixed_pt_t a, fixed_pt_t b)
+static inline fixed_pt_t mul(fixed_pt_t a, fixed_pt_t b)
 {
-  // Later could add assembly optimized version, depending on how
-  // good gcc's output it.
-  int64_t res64 = ((int64_t)a) * ((int64_t)b);
-  return res64 >> 27;
+  int32_t ah = a >> 14;
+  int32_t al = a & 0x3fff;
+  int32_t bh = b >> 14;
+  int32_t bl = b & 0x3fff;
+
+  // Ignore al * bl as contribution to final result is tiny.
+  fixed_pt_t r = ((ah * bl) + (al * bh)) >> 14;
+  r += ah * bh;
+  return r;
+}
+
+static inline fixed_pt_t square(fixed_pt_t a) {
+  int32_t ah = a >> 14;
+  int32_t al = a & 0x3fff;
+
+  return ((ah * al) >> 13) + (ah * ah);
 }
 
 fixed_pt_t make_fixed(int32_t x) {
-  return x << 27;
+  return x << 28;
 }
 
 fixed_pt_t make_fixedf(float x) {
-  return (int32_t)(x * 134217728.f);
+  return (int32_t)(x * 268435456.f);
 }
 
-uint16_t generate(uint16_t* buff, int16_t rows, int16_t cols, uint16_t max_iter,
+uint16_t generate(uint8_t* buff, int16_t rows, int16_t cols,
+                  uint16_t max_iter, uint16_t iter_offset, bool use_cycle_check,
                   fixed_pt_t minx, fixed_pt_t maxx,
                   fixed_pt_t miny, fixed_pt_t maxy)
 {
+  uint8_t* buffptr = buff;
   uint16_t min_iter = max_iter - 1;
   fixed_pt_t incx = (maxx - minx) / (cols - 1);
   fixed_pt_t incy = (maxy - miny) / (rows - 1);
   fixed_pt_t escape_square = make_fixed(4);
+
+  fixed_pt_t oldx, oldy;
+  uint16_t min_cycle_check_iter = use_cycle_check ? MIN_CYCLE_CHECK_ITER : 0xffff;
 
   for (int16_t i = 0; i < rows; ++i) {
     fixed_pt_t y0 = miny + incy * i;
@@ -47,90 +64,37 @@ uint16_t generate(uint16_t* buff, int16_t rows, int16_t cols, uint16_t max_iter,
 
       uint16_t k = 1;
       for (; k < max_iter; ++k) {
-        fixed_pt_t x_square = mul(x,x);
-        fixed_pt_t y_square = mul(y,y);
+        fixed_pt_t x_square = square(x);
+        fixed_pt_t y_square = square(y);
         if (x_square + y_square > escape_square) break;
+
+        if (k >= min_cycle_check_iter) {
+          if ((k & (MAX_CYCLE_LEN - 1)) == 0) {
+            oldx = x;
+            oldy = y;
+          }
+          else
+          {
+            if (abs(x - oldx) < CYCLE_TOLERANCE && abs(y - oldy) < CYCLE_TOLERANCE) {
+              // Found a cycle
+              k = max_iter;
+              break;
+            }
+          }
+        }
 
         fixed_pt_t nextx = x_square - y_square + x0;
         y = 2 * mul(x,y) + y0;
         x = nextx;
       }
-      if (k == max_iter) buff[i*cols + j] = 0;
+      if (k == max_iter) *buffptr++ = 0;
       else {
-        buff[i*cols + j] = k;
+        if (k > iter_offset) k -= iter_offset;
+        else k = 1;
+        *buffptr++ = k;
         if (min_iter > k) min_iter = k;
       }
     }
   }
   return min_iter;
-}
-
-#define MAX_ITER 128
-
-int main()
-{
-    stdio_init_all();
-
-    int8_t palette[MAX_ITER] = { 0,1,2,3,4,5,6 };
-    for (int i = 7, c = 0, k = 2; i < MAX_ITER; k <<= 1) {
-      for (int j = 0; j < k && i < MAX_ITER; ++i,++j) {
-        palette[i] = c;
-      }
-      if (++c > 6) c = 0;
-    }
-
-    while (1) {
-      float minx = -2.1f;
-      float maxx = 1.2f;
-      float miny = -1.3f;
-      float maxy = 1.3f;
-      float zoomx = -1.f;
-      float zoomy = -0.305f;
-      float zoomr = 0.9f;
-      uint16_t min_iter = 0;
-
-      for (int z = 0; z < 50; ++z) {
-        absolute_time_t start_time = get_absolute_time();
-        min_iter = 
-          generate(fractal_image, IMAGE_ROWS, IMAGE_COLS, MAX_ITER + min_iter,
-                   make_fixedf(minx), make_fixedf(maxx),
-                   make_fixedf(miny), make_fixedf(maxy));
-        min_iter--;
-        absolute_time_t stop_time = get_absolute_time();
-
-        puts("\x1b[2J\x1b[H");
-        char buff[6*IMAGE_COLS+2];
-        char* buffptr;
-        for (int i = 0; i < IMAGE_ROWS; ++i) {
-          buffptr = buff;
-          for (int j = 0; j < IMAGE_COLS; ++j) {
-            uint16_t iter = fractal_image[i*IMAGE_COLS + j];
-            if (iter == 0) *buffptr++ = ' ';
-            else {
-              *buffptr++ = 0x1b;
-              *buffptr++ = '[';
-              *buffptr++ = '3';
-              *buffptr++ = '1' + palette[iter - min_iter];
-              *buffptr++ = 'm';
-              *buffptr++ = 'X';
-            }
-          }
-          *buffptr++ = 0;
-          puts(buff);
-        }
-
-        printf("\x1b[37mGenerated in %lldus\n", absolute_time_diff_us(start_time, stop_time));
-
-        minx = minx * zoomr + zoomx * (1.f - zoomr);
-        maxx = maxx * zoomr + zoomx * (1.f - zoomr);
-        miny = miny * zoomr + zoomy * (1.f - zoomr);
-        maxy = maxy * zoomr + zoomy * (1.f - zoomr);
-
-        sleep_ms(100);
-      }
-
-      sleep_ms(2000);
-    }
-
-    return 0;
 }

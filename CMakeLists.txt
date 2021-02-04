@@ -19,13 +19,15 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(mandelbrot mandelbrot.c )
+add_executable(mandelbrot mandelbrot.c main.c)
 
 pico_set_program_name(mandelbrot "mandelbrot")
 pico_set_program_version(mandelbrot "0.1")
 
 pico_enable_stdio_uart(mandelbrot 0)
 pico_enable_stdio_usb(mandelbrot 1)
+
+set_source_files_properties(mandelbrot.c PROPERTIES COMPILE_FLAGS -O2)
 
 # Add the standard library to the build
 target_link_libraries(mandelbrot pico_stdlib)
