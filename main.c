@@ -120,9 +120,10 @@ int main()
       fractal_read = &fractal1;
       fractal_write = &fractal2;
       bool reset = false;
+      bool lastzoom = false;
 
       while (!reset) {
-        bool lastzoom = sizey < 0.0002f;
+        lastzoom |= sizey < 0.0002f;
         if (!lastzoom) {
           fractal_write->minx = zoomx - zoomr * sizex;
           fractal_write->maxx = zoomx + zoomr * sizex;
@@ -199,6 +200,7 @@ int main()
 
 #ifdef USE_NUNCHUCK
           reset = nunchuck_zbutton();
+          lastzoom |= nunchuck_cbutton();
 
           int joyx = nunchuck_joyx();
           int joyy = nunchuck_joyy();
