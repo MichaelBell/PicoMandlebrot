@@ -22,6 +22,8 @@
 #define ZOOM_CENTRE_X -1.0023f
 #define ZOOM_CENTRE_Y -0.3043f
 
+#define ITERATION_FIXED_PT 22
+
 typedef struct {
   uint8_t image[IMAGE_ROWS*IMAGE_COLS];
 
@@ -74,8 +76,8 @@ int main()
 
     interp_config cfg = interp_default_config();
     interp_config_set_add_raw(&cfg, true);
-    interp_config_set_shift(&cfg, 22);
-    interp_config_set_mask(&cfg, 0, 31 - 22);
+    interp_config_set_shift(&cfg, ITERATION_FIXED_PT);
+    interp_config_set_mask(&cfg, 0, 31 - ITERATION_FIXED_PT);
     interp_config_set_signed(&cfg, true);
     interp_set_config(interp0, 0, &cfg);
     interp0->base[1] = 0;
@@ -98,7 +100,7 @@ int main()
 
     float zoomx = ZOOM_CENTRE_X;
     float zoomy = ZOOM_CENTRE_Y;
-    const float zoomr = 0.7f * 0.5f;
+    const float zoomr = 0.8f * 0.5f;
     while (1) {
       fractal1.minx = zoomx - 1.55f;
       fractal1.maxx = zoomx + 1.55f;
@@ -120,16 +122,26 @@ int main()
       bool reset = false;
 
       while (!reset) {
-        bool lastzoom = (maxy - miny) < 0.0002f;
+        bool lastzoom = sizey < 0.0002f;
         if (!lastzoom) {
           fractal_write->minx = zoomx - zoomr * sizex;
           fractal_write->maxx = zoomx + zoomr * sizex;
           fractal_write->miny = zoomy - zoomr * sizey;
           fractal_write->maxy = zoomy + zoomr * sizey;
-          fractal_write->count_inside = count_inside;
-
-          multicore_fifo_push_blocking((uint32_t)fractal_write);
+        } else {
+          fractal_write->minx = minx;
+          fractal_write->maxx = maxx;
+          fractal_write->miny = miny;
+          fractal_write->maxy = maxy;
         }
+        fractal_write->count_inside = count_inside;
+
+        printf("Generating in (%f, %f) - (%f, %f) Zoom centre: (%f, %f)\n",
+              fractal_write->minx, fractal_write->miny,
+              fractal_write->maxx, fractal_write->maxy,
+              zoomx, zoomy);
+
+        multicore_fifo_push_blocking((uint32_t)fractal_write);
 
         float zoomminx = zoomx - zoomr * (fractal_write->maxx - fractal_write->minx);
         float zoommaxx = zoomx + zoomr * (fractal_write->maxx - fractal_write->minx);
@@ -150,10 +162,10 @@ int main()
           if (maxy > fractal_read->maxy) imax = (fractal_read->maxy - miny) * DISPLAY_ROWS / (maxy - miny);
 
           count_inside = 0;
-          int32_t y = (int32_t)(((miny - fractal_read->miny) / (fractal_read->maxy - fractal_read->miny)) * IMAGE_ROWS * (float)(1 << 22));
-          int32_t y_step = (int32_t)((sizey / ((fractal_read->maxy - fractal_read->miny) * DISPLAY_ROWS)) * IMAGE_ROWS * (float)(1 << 22));
-          int32_t x_start = (int32_t)(((minx - fractal_read->minx) / (fractal_read->maxx - fractal_read->minx)) * IMAGE_COLS * (float)(1 << 22));
-          interp0->base[0] = (int32_t)((sizex / ((fractal_read->maxx - fractal_read->minx) * DISPLAY_COLS)) * IMAGE_COLS * (float)(1 << 22));
+          int32_t y = (int32_t)(((miny - fractal_read->miny) / (fractal_read->maxy - fractal_read->miny)) * IMAGE_ROWS * (float)(1 << ITERATION_FIXED_PT));
+          int32_t y_step = (int32_t)((sizey / ((fractal_read->maxy - fractal_read->miny) * DISPLAY_ROWS)) * IMAGE_ROWS * (float)(1 << ITERATION_FIXED_PT));
+          int32_t x_start = (int32_t)(((minx - fractal_read->minx) / (fractal_read->maxx - fractal_read->minx)) * IMAGE_COLS * (float)(1 << ITERATION_FIXED_PT));
+          interp0->base[0] = (int32_t)((sizex / ((fractal_read->maxx - fractal_read->minx) * DISPLAY_COLS)) * IMAGE_COLS * (float)(1 << ITERATION_FIXED_PT));
 
           // Offset x and y by half a step so that we get round to nearest
           y += y_step >> 1;
@@ -168,7 +180,7 @@ int main()
               }
             }
             else {
-              int image_i = y >> 22;
+              int image_i = y >> ITERATION_FIXED_PT;
 
               interp0->accum[0] = x_start;
               interp0->base[2] = (uintptr_t)(fractal_read->image + image_i * IMAGE_COLS);
@@ -197,7 +209,7 @@ int main()
           if (zoomx > zoommaxx) zoomx = zoommaxx;
           if (zoomx < zoomminx) zoomx = zoomminx;
           if (zoomy > zoommaxy) zoomy = zoommaxy;
-          if (zoomy < zoomminx) zoomy = zoomminy;
+          if (zoomy < zoomminy) zoomy = zoomminy;
 #endif
 
           if (lastzoom || reset) break;
@@ -221,13 +233,20 @@ int main()
         absolute_time_t stop_time = get_absolute_time();
         printf("Frames in %lldus\n", absolute_time_diff_us(start_time, stop_time));
 
-        if (lastzoom) break;
+        multicore_fifo_pop_blocking();
+
+        if (lastzoom && 
+            minx >= fractal_read->minx &&
+            maxx <= fractal_read->maxx &&
+            miny >= fractal_read->miny &&
+            maxy <= fractal_read->maxy)
+        {
+          break;
+        }
 
         FractalBuffer* tmp = fractal_read;
         fractal_read = fractal_write;
         fractal_write = tmp;
-
-        multicore_fifo_pop_blocking();
       }
 
       if (!reset) {
