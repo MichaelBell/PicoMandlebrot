@@ -23,7 +23,7 @@ typedef struct {
 
 FractalBuffer fractal1, fractal2;
 
-#define MAX_ITER 192
+#define MAX_ITER 0xe0
 
 void core1_entry() {
   mandel_init();
@@ -88,8 +88,8 @@ int main()
       fractal1.maxx = 1.2f;
       fractal1.miny = -1.3f;
       fractal1.maxy = 1.3f;
-      float zoomx = -1.f;
-      float zoomy = -0.305f;
+      float zoomx = -1.0023f;
+      float zoomy = -0.3043f;
       float zoomr = 0.5f;
       uint32_t count_inside = IMAGE_ROWS * IMAGE_COLS;
       fractal1.count_inside = count_inside;
