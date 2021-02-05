@@ -10,14 +10,12 @@
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 #include "hardware/gpio.h"
-#include "hardware/interp.h"
+#include "hardware/dma.h"
 
 #include "st7789_lcd.pio.h"
 
 #define SCREEN_WIDTH 240
 #define SCREEN_HEIGHT 240
-#define IMAGE_SIZE 256
-#define LOG_IMAGE_SIZE 8
 
 #define PIN_DIN 0
 #define PIN_CLK 1
@@ -91,6 +89,7 @@ void st7789_init(PIO pio, uint sm) {
 
 void st7789_start_pixels(PIO pio, uint sm) {
     uint8_t cmd = 0x2c; // RAMWR
+    st7789_lcd_wait_idle(pio, sm);
     st7789_set_pixel_mode(pio, sm, false);
     lcd_write_cmd(pio, sm, &cmd, 1);
     st7789_set_pixel_mode(pio, sm, true);
@@ -103,3 +102,48 @@ void st7789_stop_pixels(PIO pio, uint sm) {
     st7789_set_pixel_mode(pio, sm, false);
 }
 
+uint st7789_create_dma_channel(PIO pio, uint sm)
+{
+  uint chan = dma_claim_unused_channel(true);
+
+  dma_channel_config c = dma_channel_get_default_config(chan);
+  channel_config_set_transfer_data_size(&c, DMA_SIZE_16);
+  channel_config_set_dreq(&c, pio_get_dreq(pio, sm, true));
+  channel_config_set_read_increment(&c, true);
+  channel_config_set_write_increment(&c, false);
+
+  dma_channel_configure(
+        chan,          // Channel to be configured
+        &c,            // The configuration we just created
+        &pio->txf[sm], // The write address
+        NULL,          // The initial read address - set later
+        0,             // Number of transfers - set later
+        false          // Don't start yet
+    );
+
+  return chan;
+}
+
+void st7789_dma_pixels(uint chan, const uint16_t* pixels, uint num_pixels)
+{
+  // Ensure any previous transfer is finished.
+  dma_channel_wait_for_finish_blocking(chan);
+
+  dma_channel_hw_addr(chan)->read_addr = (uintptr_t)pixels;
+  dma_channel_hw_addr(chan)->transfer_count = num_pixels;
+  uint ctrl = dma_channel_hw_addr(chan)->ctrl_trig;
+  dma_channel_hw_addr(chan)->ctrl_trig = (ctrl | DMA_CH0_CTRL_TRIG_INCR_READ_BITS);
+}
+
+static uint32_t pixel_to_dma;
+
+void st7789_dma_repeat_pixel(uint chan, uint16_t pixel, uint repeats)
+{
+  dma_channel_wait_for_finish_blocking(chan);
+
+  pixel_to_dma = pixel;
+  dma_channel_hw_addr(chan)->read_addr = (uintptr_t)&pixel_to_dma;
+  dma_channel_hw_addr(chan)->transfer_count = repeats;
+  uint ctrl = dma_channel_hw_addr(chan)->ctrl_trig;
+  dma_channel_hw_addr(chan)->ctrl_trig = (ctrl & ~DMA_CH0_CTRL_TRIG_INCR_READ_BITS);
+}

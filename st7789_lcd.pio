@@ -40,8 +40,8 @@ static inline void st7789_lcd_program_init(PIO pio, uint sm, uint offset, uint d
 
 static inline void st7789_set_pixel_mode(PIO pio, uint sm, bool pixel_mode) {
     uint32_t shiftctrl = pio->sm[sm].shiftctrl;
-    shiftctrl &= 0xc1ffffff;
-    shiftctrl |= (pixel_mode ? 16u : 8u) << 25;
+    shiftctrl &= ~PIO_SM0_SHIFTCTRL_PULL_THRESH_BITS;
+    shiftctrl |= (pixel_mode ? 16u : 8u) << PIO_SM0_SHIFTCTRL_PULL_THRESH_LSB;
     pio->sm[sm].shiftctrl = shiftctrl;
 }
 

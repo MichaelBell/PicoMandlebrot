@@ -34,6 +34,8 @@ typedef struct {
 
 FractalBuffer fractal1, fractal2;
 
+uint16_t pixel_row_buff[2][DISPLAY_COLS];
+
 #define MAX_ITER 0xe0
 
 void core1_entry() {
@@ -63,6 +65,8 @@ int main()
     FractalBuffer* fractal_read;
     FractalBuffer* fractal_write;
 
+    //set_sys_clock_khz(150000, false);
+
     stdio_init_all();
 #ifdef USE_NUNCHUCK
     nunchuck_init(12, 13);
@@ -71,6 +75,7 @@ int main()
     PIO pio = pio0;
     uint sm = 0;
     st7789_init(pio, sm);
+    uint st7789_chan = st7789_create_dma_channel(pio, sm);
 
     multicore_launch_core1(core1_entry);
 
@@ -176,9 +181,7 @@ int main()
           for (int i = 0; i < DISPLAY_ROWS; ++i, y += y_step) {
 
             if (i < imin || i >= imax) {
-              for (int j = 0; j < DISPLAY_COLS; ++j) {
-                st7789_lcd_put_pixel(pio, sm, 0);
-              }
+              st7789_dma_repeat_pixel(st7789_chan, 0, DISPLAY_COLS);
             }
             else {
               int image_i = y >> ITERATION_FIXED_PT;
@@ -186,15 +189,17 @@ int main()
               interp0->accum[0] = x_start;
               interp0->base[2] = (uintptr_t)(fractal_read->image + image_i * IMAGE_COLS);
 
+              uint16_t* pixelptr = pixel_row_buff[i & 1];
               for (int j = 0; j < DISPLAY_COLS; ++j) {
                 uint8_t* iter = (uint8_t*)interp0->pop[2];
                 if (j < jmin || j >= jmax) {
-                  st7789_lcd_put_pixel(pio, sm, 0);
+                  *pixelptr++ = 0;
                 } else {
-                  st7789_lcd_put_pixel(pio, sm, palette[*iter]);
+                  *pixelptr++ = palette[*iter];
                   if (*iter == 0) count_inside++;
                 }
               }
+              st7789_dma_pixels(st7789_chan, pixel_row_buff[i & 1], DISPLAY_COLS);
             }
           }
 
@@ -250,6 +255,8 @@ int main()
         fractal_read = fractal_write;
         fractal_write = tmp;
       }
+
+      st7789_stop_pixels(pio, sm);
 
       if (!reset) {
 #ifdef USE_NUNCHUCK
