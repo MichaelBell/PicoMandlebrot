@@ -1,6 +1,6 @@
 # Mandlebrot Set generator
 
-Draws the Mandelbrot set to a 240x240 ST7789 display connected as in the pio/st7789 pio pico example.
+Draws the Mandelbrot set to a 240x240 ST7789 display connected as in the pio/st7789 pico example.
 
 The fractal slowly zooms in, with the drawing and interpolation handled by one core while the other core is generating the next zoomed image.
 
