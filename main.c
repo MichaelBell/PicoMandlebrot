@@ -5,6 +5,7 @@
 #include "hardware/pio.h"
 #include "hardware/interp.h"
 #include "hardware/dma.h"
+#include "hardware/clocks.h"
 
 #include "mandelbrot.h"
 #include "st7789_lcd.h"
@@ -64,7 +65,19 @@ int main()
     fractal2.iter_offset = 0;
     fractal2.use_cycle_check = false;
 
-    //set_sys_clock_khz(150000, false);
+    // Set clock speed to max in spec.
+    // To overclock, you could try these settings:
+    //   PLL 1500, 5, 2 => 150 MHZ
+    //   PLL 1440, 3, 3 => 160 MHZ
+    // Don't forget to change the peripheral clock setting below too.
+    set_sys_clock_pll(1596 * MHZ, 6, 2);
+
+    // Tell the periperal clock the new sys clock speed
+    clock_configure(clk_peri,
+                    0,
+                    CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLK_SYS,
+                    133 * MHZ,
+                    133 * MHZ);
 
     stdio_init_all();
 #ifdef USE_NUNCHUCK
