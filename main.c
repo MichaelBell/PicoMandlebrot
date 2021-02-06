@@ -4,6 +4,7 @@
 #include "pico/multicore.h"
 #include "hardware/pio.h"
 #include "hardware/interp.h"
+#include "hardware/dma.h"
 
 #include "mandelbrot.h"
 #include "st7789_lcd.h"
@@ -19,8 +20,8 @@
 #define DISPLAY_ROWS 240
 #define DISPLAY_COLS 240
 
-#define ZOOM_CENTRE_X -1.0023f
-#define ZOOM_CENTRE_Y -0.3043f
+#define ZOOM_CENTRE_X -1.01f
+#define ZOOM_CENTRE_Y -0.3125f
 
 #define ITERATION_FIXED_PT 22
 
@@ -73,7 +74,8 @@ int main()
     PIO pio = pio0;
     uint sm = 0;
     st7789_init(pio, sm);
-    uint st7789_chan = st7789_create_dma_channel(pio, sm);
+    uint st7789_chan[2];
+    st7789_create_dma_channels(pio, sm, st7789_chan);
 
     multicore_launch_core1(core1_entry);
 
@@ -154,10 +156,10 @@ int main()
         float zoomminy = zoomy - zoomr * (fractal_write->maxy - fractal_write->miny);
         float zoommaxy = zoomy + zoomr * (fractal_write->maxy - fractal_write->miny);
 
-        const float izoomr = 0.9975f * 0.5f;
+        const float izoomr = 0.995f * 0.5f;
 
         absolute_time_t start_time = get_absolute_time();
-        for (int iz = 0; iz < 220; ++iz) {
+        for (int iz = 0; iz < 110; ++iz) {
           int imin = 0;
           int imax = DISPLAY_ROWS;
           int jmin = 0;
@@ -179,8 +181,9 @@ int main()
           st7789_start_pixels(pio, sm);
           for (int i = 0; i < DISPLAY_ROWS; ++i, y += y_step) {
 
+            dma_channel_wait_for_finish_blocking(st7789_chan[i & 1]);
             if (i < imin || i >= imax) {
-              st7789_dma_repeat_pixel(st7789_chan, 0, DISPLAY_COLS);
+              st7789_dma_repeat_pixel(st7789_chan, i & 1, 0, DISPLAY_COLS);
             }
             else {
               int image_i = y >> ITERATION_FIXED_PT;
@@ -197,7 +200,7 @@ int main()
                   *pixelptr++ = palette[*iter];
                 }
               }
-              st7789_dma_pixels(st7789_chan, pixel_row_buff[i & 1], DISPLAY_COLS);
+              st7789_dma_pixels(st7789_chan, i & 1, pixel_row_buff[i & 1], DISPLAY_COLS);
             }
           }
 

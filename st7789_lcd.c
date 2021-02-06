@@ -24,7 +24,7 @@
 #define PIN_RESET 4
 #define PIN_BL 5
 
-#define SERIAL_CLK_DIV 1.f
+#define SERIAL_CLK_DIV 2.f
 
 // Format: cmd length (including cmd byte), post delay in units of 5 ms, then cmd payload
 // Note the delays have been shortened a little
@@ -102,18 +102,19 @@ void st7789_stop_pixels(PIO pio, uint sm) {
     st7789_set_pixel_mode(pio, sm, false);
 }
 
-uint st7789_create_dma_channel(PIO pio, uint sm)
+void st7789_create_dma_channels(PIO pio, uint sm, uint chan[2])
 {
-  uint chan = dma_claim_unused_channel(true);
+  chan[0] = dma_claim_unused_channel(true);
+  chan[1] = dma_claim_unused_channel(true);
 
-  dma_channel_config c = dma_channel_get_default_config(chan);
+  dma_channel_config c = dma_channel_get_default_config(chan[0]);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_16);
   channel_config_set_dreq(&c, pio_get_dreq(pio, sm, true));
   channel_config_set_read_increment(&c, true);
   channel_config_set_write_increment(&c, false);
 
   dma_channel_configure(
-        chan,          // Channel to be configured
+        chan[0],       // Channel to be configured
         &c,            // The configuration we just created
         &pio->txf[sm], // The write address
         NULL,          // The initial read address - set later
@@ -121,29 +122,73 @@ uint st7789_create_dma_channel(PIO pio, uint sm)
         false          // Don't start yet
     );
 
-  return chan;
+  c = dma_channel_get_default_config(chan[1]);
+  channel_config_set_transfer_data_size(&c, DMA_SIZE_16);
+  channel_config_set_dreq(&c, pio_get_dreq(pio, sm, true));
+  channel_config_set_read_increment(&c, true);
+  channel_config_set_write_increment(&c, false);
+
+  dma_channel_configure(
+        chan[1],       // Channel to be configured
+        &c,            // The configuration we just created
+        &pio->txf[sm], // The write address
+        NULL,          // The initial read address - set later
+        0,             // Number of transfers - set later
+        false          // Don't start yet
+    );
 }
 
-void st7789_dma_pixels(uint chan, const uint16_t* pixels, uint num_pixels)
+static inline void st7789_chain_or_trigger(uint this_chan, uint other_chan, uint ctrl)
 {
-  // Ensure any previous transfer is finished.
-  dma_channel_wait_for_finish_blocking(chan);
+  if (dma_channel_is_busy(other_chan)) {
+    // Other channel is busy, chain this one to it
+    dma_channel_hw_addr(this_chan)->al1_ctrl = ctrl;
+    uint other_ctrl = dma_channel_hw_addr(other_chan)->ctrl_trig;
+    other_ctrl &= ~DMA_CH0_CTRL_TRIG_CHAIN_TO_BITS;
+    other_ctrl |= this_chan << DMA_CH0_CTRL_TRIG_CHAIN_TO_LSB;
+    dma_channel_hw_addr(other_chan)->al1_ctrl = other_ctrl;
 
-  dma_channel_hw_addr(chan)->read_addr = (uintptr_t)pixels;
-  dma_channel_hw_addr(chan)->transfer_count = num_pixels;
-  uint ctrl = dma_channel_hw_addr(chan)->ctrl_trig;
-  dma_channel_hw_addr(chan)->ctrl_trig = (ctrl | DMA_CH0_CTRL_TRIG_INCR_READ_BITS);
+    if (!dma_channel_is_busy(other_chan) && !dma_channel_is_busy(this_chan)) {
+        // Manually start this channel
+      dma_channel_hw_addr(this_chan)->ctrl_trig = ctrl;
+    }
+  } else {
+    dma_channel_hw_addr(this_chan)->ctrl_trig = ctrl;
+  }
+}
+
+void st7789_dma_pixels(uint chan[2], uint chan_idx, const uint16_t* pixels, uint num_pixels)
+{
+  uint this_chan = chan[chan_idx];
+  uint other_chan = chan[chan_idx ^ 1];
+
+  // Ensure any previous transfer is finished.
+  dma_channel_wait_for_finish_blocking(this_chan);
+
+  dma_channel_hw_addr(this_chan)->read_addr = (uintptr_t)pixels;
+  dma_channel_hw_addr(this_chan)->transfer_count = num_pixels;
+  uint ctrl = dma_channel_hw_addr(this_chan)->ctrl_trig;
+  ctrl &= ~DMA_CH0_CTRL_TRIG_CHAIN_TO_BITS;
+  ctrl |= DMA_CH0_CTRL_TRIG_INCR_READ_BITS | (this_chan << DMA_CH0_CTRL_TRIG_CHAIN_TO_LSB);
+
+  st7789_chain_or_trigger(this_chan, other_chan, ctrl);
 }
 
 static uint32_t pixel_to_dma;
 
-void st7789_dma_repeat_pixel(uint chan, uint16_t pixel, uint repeats)
+void st7789_dma_repeat_pixel(uint chan[2], uint chan_idx, uint16_t pixel, uint repeats)
 {
-  dma_channel_wait_for_finish_blocking(chan);
+  uint this_chan = chan[chan_idx];
+  uint other_chan = chan[chan_idx ^ 1];
+
+  dma_channel_wait_for_finish_blocking(this_chan);
 
   pixel_to_dma = pixel;
-  dma_channel_hw_addr(chan)->read_addr = (uintptr_t)&pixel_to_dma;
-  dma_channel_hw_addr(chan)->transfer_count = repeats;
-  uint ctrl = dma_channel_hw_addr(chan)->ctrl_trig;
-  dma_channel_hw_addr(chan)->ctrl_trig = (ctrl & ~DMA_CH0_CTRL_TRIG_INCR_READ_BITS);
+  dma_channel_hw_addr(this_chan)->read_addr = (uintptr_t)&pixel_to_dma;
+  dma_channel_hw_addr(this_chan)->transfer_count = repeats;
+  uint ctrl = dma_channel_hw_addr(this_chan)->ctrl_trig;
+  ctrl &= ~(DMA_CH0_CTRL_TRIG_INCR_READ_BITS | DMA_CH0_CTRL_TRIG_CHAIN_TO_BITS);
+  ctrl |= this_chan << DMA_CH0_CTRL_TRIG_CHAIN_TO_LSB;
+
+  st7789_chain_or_trigger(this_chan, other_chan, ctrl);
 }
