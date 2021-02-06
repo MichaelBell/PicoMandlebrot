@@ -8,8 +8,8 @@ typedef int32_t fixed_pt_t;
 typedef struct {
   // Configuration
   uint8_t* buff;
-  uint16_t rows;
-  uint16_t cols;
+  int16_t rows;
+  int16_t cols;
 
   uint16_t max_iter;
   uint16_t iter_offset;
@@ -17,6 +17,7 @@ typedef struct {
   bool use_cycle_check;
 
   // State
+  volatile bool done;
   volatile uint16_t min_iter;
   fixed_pt_t iminx, iminy, imaxx, imaxy;
   fixed_pt_t incx, incy;
@@ -35,3 +36,5 @@ fixed_pt_t make_fixedf(float x);
 // Otherwise iteration of escape minus min_iter (clamped to 1)
 void init_fractal(FractalBuffer* fractal);
 void generate_fractal(FractalBuffer* fractal);
+void generate_steal(FractalBuffer* f, uint dma_to_check);
+void generate_steal_until_done(FractalBuffer* f);

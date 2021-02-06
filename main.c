@@ -15,14 +15,16 @@
 #include "nunchuck.h"
 #endif
 
-#define IMAGE_ROWS 320
-#define IMAGE_COLS 320
+#define IMAGE_ROWS 340
+#define IMAGE_COLS 340
 
 #define DISPLAY_ROWS 240
 #define DISPLAY_COLS 240
 
 #define ZOOM_CENTRE_X -1.01f
 #define ZOOM_CENTRE_Y -0.3125f
+//#define ZOOM_CENTRE_X -1.0023f
+//#define ZOOM_CENTRE_Y -0.3043f
 
 #define ITERATION_FIXED_PT 22
 
@@ -42,7 +44,7 @@ void core1_entry() {
     absolute_time_t start_time = get_absolute_time();
     generate_fractal(fractal); 
     absolute_time_t stop_time = get_absolute_time();
-    printf("Generated in %lldus\n", absolute_time_diff_us(start_time, stop_time));
+    printf("Generated in %lldus core 0 did %d pixels\n", absolute_time_diff_us(start_time, stop_time), fractal->cols * (fractal->rows - fractal->iend) + fractal->cols - fractal->jend);
 
     multicore_fifo_push_blocking(1);
   }
@@ -118,7 +120,7 @@ int main()
 
     float zoomx = ZOOM_CENTRE_X;
     float zoomy = ZOOM_CENTRE_Y;
-    const float zoomr = 0.8f * 0.5f;
+    const float zoomr = 0.85f * 0.5f;
     while (1) {
       fractal1.minx = zoomx - 1.55f;
       fractal1.maxx = zoomx + 1.55f;
@@ -154,7 +156,8 @@ int main()
           fractal_write->miny = miny;
           fractal_write->maxy = maxy;
         }
-        fractal_write->use_cycle_check = fractal_write->count_inside > (IMAGE_ROWS*IMAGE_COLS) / 16;
+        fractal_write->use_cycle_check = sizey > 0.01f && 
+                    fractal_write->count_inside > (IMAGE_ROWS*IMAGE_COLS) / 16;
 
         printf("Generating in (%f, %f) - (%f, %f) Zoom centre: (%f, %f)\n",
               fractal_write->minx, fractal_write->miny,
@@ -171,8 +174,9 @@ int main()
 
         const float izoomr = 0.995f * 0.5f;
 
+        int iz = 1;
         absolute_time_t start_time = get_absolute_time();
-        for (int iz = 0; iz < 110; ++iz) {
+        for (; iz < 128; ++iz) {
           int imin = 0;
           int imax = DISPLAY_ROWS;
           int jmin = 0;
@@ -194,7 +198,9 @@ int main()
           st7789_start_pixels(pio, sm);
           for (int i = 0; i < DISPLAY_ROWS; ++i, y += y_step) {
 
-            dma_channel_wait_for_finish_blocking(st7789_chan[i & 1]);
+            // This generates fractal until the DMA channel is ready again
+            generate_steal(fractal_write, st7789_chan[i & 1]);
+
             if (i < imin || i >= imax) {
               st7789_dma_repeat_pixel(st7789_chan, i & 1, 0, DISPLAY_COLS);
             }
@@ -252,8 +258,11 @@ int main()
           }
         }
         absolute_time_t stop_time = get_absolute_time();
-        printf("Frames in %lldus\n", absolute_time_diff_us(start_time, stop_time));
+        uint32_t time_diff = absolute_time_diff_us(start_time, stop_time);
+        printf("Frames in %dus (%d frames at %d FPS)\n", time_diff, iz, (iz * 1000000) / time_diff);
 
+        if (!multicore_fifo_rvalid())
+          generate_steal_until_done(fractal_write);
         multicore_fifo_pop_blocking();
 
         if (lastzoom && 

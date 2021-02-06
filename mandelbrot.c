@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include "pico/stdlib.h"
 #include "hardware/interp.h"
+#include "hardware/dma.h"
 
 #include "mandelbrot.h"
 
@@ -85,6 +86,7 @@ void mandel_init()
 
 void init_fractal(FractalBuffer* f)
 {
+  f->done = false;
   f->min_iter = f->max_iter - 1;
   f->iminx = make_fixedf(f->minx);
   f->imaxx = make_fixedf(f->maxx);
@@ -97,54 +99,138 @@ void init_fractal(FractalBuffer* f)
   f->jend = f->rows - 1;
 }
 
+static inline void generate_one(FractalBuffer* f, fixed_pt_t x0, fixed_pt_t y0, uint8_t* buffptr)
+{
+  fixed_pt_t x = x0;
+  fixed_pt_t y = y0;
+
+  uint16_t k = 1;
+  for (; k < f->max_iter; ++k) {
+    fixed_pt_t x_square = square(x);
+    fixed_pt_t y_square = square(y);
+    if (x_square + y_square > ESCAPE_SQUARE) break;
+
+    fixed_pt_t nextx = x_square - y_square + x0;
+    y = mul2(x,y) + y0;
+    x = nextx;
+  }
+  if (k == f->max_iter) {
+    *buffptr = 0;
+    f->count_inside++;
+  } else {
+    if (k > f->iter_offset) k -= f->iter_offset;
+    else k = 1;
+    *buffptr = k;
+    if (f->min_iter > k) f->min_iter = k;
+  }
+}
+
+static inline void generate_one_cycle_check(FractalBuffer* f, fixed_pt_t x0, fixed_pt_t y0, uint8_t* buffptr)
+{
+  fixed_pt_t x = x0;
+  fixed_pt_t y = y0;
+  fixed_pt_t oldx, oldy;
+
+  uint16_t k = 1;
+  for (; k < f->max_iter; ++k) {
+    fixed_pt_t x_square = square(x);
+    fixed_pt_t y_square = square(y);
+    if (x_square + y_square > ESCAPE_SQUARE) break;
+
+    if (k >= MIN_CYCLE_CHECK_ITER) {
+      if ((k & (MAX_CYCLE_LEN - 1)) == 0) {
+        oldx = x - CYCLE_TOLERANCE;
+        oldy = y - CYCLE_TOLERANCE;
+      }
+      else
+      {
+        if ((uint32_t)(x - oldx) < (2*CYCLE_TOLERANCE) && (uint32_t)(y - oldy) < (2*CYCLE_TOLERANCE)) {
+          // Found a cycle
+          k = f->max_iter;
+          break;
+        }
+      }
+    }
+
+    fixed_pt_t nextx = x_square - y_square + x0;
+    y = mul2(x,y) + y0;
+    x = nextx;
+  }
+  if (k == f->max_iter) {
+    *buffptr = 0;
+    f->count_inside++;
+  } else {
+    if (k > f->iter_offset) k -= f->iter_offset;
+    else k = 1;
+    *buffptr = k;
+    if (f->min_iter > k) f->min_iter = k;
+  }
+}
+
 void generate_fractal(FractalBuffer* f)
 {
   uint8_t* buffptr = f->buff;
 
-  fixed_pt_t oldx, oldy;
-  uint16_t min_cycle_check_iter = f->use_cycle_check ? MIN_CYCLE_CHECK_ITER : 0xffff;
-
   fixed_pt_t y0 = f->iminy;
-  for (int16_t i = 0; i <= f->iend; ++i, y0 += f->incy) {
+  int16_t i = 0;
+  for (; i < f->iend; ++i, y0 += f->incy) {
     fixed_pt_t x0 = f->iminx;
     for (int16_t j = 0; j < f->cols; ++j, x0 += f->incx) {
-      fixed_pt_t x = x0;
-      fixed_pt_t y = y0;
-
-      uint16_t k = 1;
-      for (; k < f->max_iter; ++k) {
-        fixed_pt_t x_square = square(x);
-        fixed_pt_t y_square = square(y);
-        if (x_square + y_square > ESCAPE_SQUARE) break;
-
-        if (k >= min_cycle_check_iter) {
-          if ((k & (MAX_CYCLE_LEN - 1)) == 0) {
-            oldx = x - CYCLE_TOLERANCE;
-            oldy = y - CYCLE_TOLERANCE;
-          }
-          else
-          {
-            if ((uint32_t)(x - oldx) < (2*CYCLE_TOLERANCE) && (uint32_t)(y - oldy) < (2*CYCLE_TOLERANCE)) {
-              // Found a cycle
-              k = f->max_iter;
-              break;
-            }
-          }
-        }
-
-        fixed_pt_t nextx = x_square - y_square + x0;
-        y = mul2(x,y) + y0;
-        x = nextx;
-      }
-      if (k == f->max_iter) {
-        *buffptr++ = 0;
-        f->count_inside++;
-      } else {
-        if (k > f->iter_offset) k -= f->iter_offset;
-        else k = 1;
-        *buffptr++ = k;
-        if (f->min_iter > k) f->min_iter = k;
-      }
+      if (f->use_cycle_check) generate_one_cycle_check(f, x0, y0, buffptr++);
+      else generate_one(f, x0, y0, buffptr++);
     }
+  }
+
+  fixed_pt_t x0 = f->iminx;
+  for (int16_t j = 0; j < f->jend && i == f->iend; ++j, x0 += f->incx) {
+    if (f->use_cycle_check) generate_one_cycle_check(f, x0, y0, buffptr++);
+    else generate_one(f, x0, y0, buffptr++);
+  }
+
+  f->done = true;
+}
+
+void generate_steal(FractalBuffer* f, uint dma_to_check)
+{
+  if (!dma_channel_is_busy(dma_to_check)) return;
+  if (f->done) {
+    dma_channel_wait_for_finish_blocking(dma_to_check);
+    return;
+  }
+
+  uint8_t* buffptr = f->buff + f->iend * f->cols + f->jend;
+
+  fixed_pt_t y0 = f->iminy + f->iend * f->incy;
+  fixed_pt_t x0 = f->iminx + f->jend * f->incx;
+  for (; f->iend >= 0; --f->iend, y0 -= f->incy) {
+    for (; f->jend >= 0; x0 -= f->incx) {
+      if (f->use_cycle_check) generate_one_cycle_check(f, x0, y0, buffptr--);
+      else generate_one(f, x0, y0, buffptr--);
+
+      --f->jend;
+      if (!dma_channel_is_busy(dma_to_check)) return;
+    }
+    f->jend = f->cols - 1;
+    x0 = f->imaxx - f->incx;
+  }
+
+  dma_channel_wait_for_finish_blocking(dma_to_check);
+}
+
+void generate_steal_until_done(FractalBuffer* f)
+{
+  uint8_t* buffptr = f->buff + f->iend * f->cols + f->jend;
+
+  fixed_pt_t y0 = f->iminy + f->iend * f->incy;
+  fixed_pt_t x0 = f->iminx + f->jend * f->incx;
+  for (; f->iend >= 0; --f->iend, y0 -= f->incy) {
+    for (; f->jend >= 0; --f->jend, x0 -= f->incx) {
+      if (f->use_cycle_check) generate_one_cycle_check(f, x0, y0, buffptr--);
+      else generate_one(f, x0, y0, buffptr--);
+
+      if (f->done) return;
+    }
+    f->jend = f->cols - 1;
+    x0 = f->imaxx - f->incx;
   }
 }
