@@ -24,14 +24,7 @@
 
 #define ITERATION_FIXED_PT 22
 
-typedef struct {
-  uint8_t image[IMAGE_ROWS*IMAGE_COLS];
-
-  uint32_t count_inside;
-  uint32_t min_iter;
-  float minx, miny, maxx, maxy;
-} FractalBuffer;
-
+uint8_t fractal_iter_buff[2][IMAGE_ROWS*IMAGE_COLS];
 FractalBuffer fractal1, fractal2;
 
 uint16_t pixel_row_buff[2][DISPLAY_COLS];
@@ -45,14 +38,7 @@ void core1_entry() {
     FractalBuffer* fractal = (void*)multicore_fifo_pop_blocking();
 
     absolute_time_t start_time = get_absolute_time();
-    fractal->min_iter = 
-          generate(fractal->image, IMAGE_ROWS, IMAGE_COLS, 
-                   MAX_ITER /* + min_iter*/,
-                   0,
-                   fractal->count_inside > (IMAGE_ROWS * IMAGE_COLS) / 16,
-                   make_fixedf(fractal->minx), make_fixedf(fractal->maxx),
-                   make_fixedf(fractal->miny), make_fixedf(fractal->maxy));
-    fractal->min_iter--;
+    generate_fractal(fractal); 
     absolute_time_t stop_time = get_absolute_time();
     printf("Generated in %lldus\n", absolute_time_diff_us(start_time, stop_time));
 
@@ -64,6 +50,18 @@ int main()
 {
     FractalBuffer* fractal_read;
     FractalBuffer* fractal_write;
+    fractal1.buff = fractal_iter_buff[0];
+    fractal1.rows = IMAGE_ROWS;
+    fractal1.cols = IMAGE_COLS;
+    fractal1.max_iter = MAX_ITER;
+    fractal1.iter_offset = 0;
+    fractal1.use_cycle_check = false;
+    fractal2.buff = fractal_iter_buff[1];
+    fractal2.rows = IMAGE_ROWS;
+    fractal2.cols = IMAGE_COLS;
+    fractal2.max_iter = MAX_ITER;
+    fractal2.iter_offset = 0;
+    fractal2.use_cycle_check = false;
 
     //set_sys_clock_khz(150000, false);
 
@@ -117,11 +115,12 @@ int main()
       float miny = fractal1.miny;
       float maxy = fractal1.maxy;
       float sizey = maxy - miny;
-      uint32_t count_inside = IMAGE_ROWS * IMAGE_COLS;
-      fractal1.count_inside = count_inside;
+      fractal1.use_cycle_check = true;
+      init_fractal(&fractal1);
       multicore_fifo_push_blocking((uint32_t)&fractal1);
       multicore_fifo_pop_blocking();
       
+      fractal2.count_inside = IMAGE_ROWS*IMAGE_COLS;
       fractal_read = &fractal1;
       fractal_write = &fractal2;
       bool reset = false;
@@ -140,13 +139,14 @@ int main()
           fractal_write->miny = miny;
           fractal_write->maxy = maxy;
         }
-        fractal_write->count_inside = count_inside;
+        fractal_write->use_cycle_check = fractal_write->count_inside > (IMAGE_ROWS*IMAGE_COLS) / 16;
 
         printf("Generating in (%f, %f) - (%f, %f) Zoom centre: (%f, %f)\n",
               fractal_write->minx, fractal_write->miny,
               fractal_write->maxx, fractal_write->maxy,
               zoomx, zoomy);
 
+        init_fractal(fractal_write);
         multicore_fifo_push_blocking((uint32_t)fractal_write);
 
         float zoomminx = zoomx - zoomr * (fractal_write->maxx - fractal_write->minx);
@@ -167,7 +167,6 @@ int main()
           if (miny < fractal_read->miny) imin = 1 + (fractal_read->miny - miny) * DISPLAY_ROWS / (maxy - miny);
           if (maxy > fractal_read->maxy) imax = (fractal_read->maxy - miny) * DISPLAY_ROWS / (maxy - miny);
 
-          count_inside = 0;
           int32_t y = (int32_t)(((miny - fractal_read->miny) / (fractal_read->maxy - fractal_read->miny)) * IMAGE_ROWS * (float)(1 << ITERATION_FIXED_PT));
           int32_t y_step = (int32_t)((sizey / ((fractal_read->maxy - fractal_read->miny) * DISPLAY_ROWS)) * IMAGE_ROWS * (float)(1 << ITERATION_FIXED_PT));
           int32_t x_start = (int32_t)(((minx - fractal_read->minx) / (fractal_read->maxx - fractal_read->minx)) * IMAGE_COLS * (float)(1 << ITERATION_FIXED_PT));
@@ -187,7 +186,7 @@ int main()
               int image_i = y >> ITERATION_FIXED_PT;
 
               interp0->accum[0] = x_start;
-              interp0->base[2] = (uintptr_t)(fractal_read->image + image_i * IMAGE_COLS);
+              interp0->base[2] = (uintptr_t)(fractal_read->buff + image_i * IMAGE_COLS);
 
               uint16_t* pixelptr = pixel_row_buff[i & 1];
               for (int j = 0; j < DISPLAY_COLS; ++j) {
@@ -196,7 +195,6 @@ int main()
                   *pixelptr++ = 0;
                 } else {
                   *pixelptr++ = palette[*iter];
-                  if (*iter == 0) count_inside++;
                 }
               }
               st7789_dma_pixels(st7789_chan, pixel_row_buff[i & 1], DISPLAY_COLS);

@@ -3,6 +3,8 @@
 #include "pico/stdlib.h"
 #include "hardware/interp.h"
 
+#include "mandelbrot.h"
+
 // Cycle checking parameters
 #define MAX_CYCLE_LEN 8          // Must be power of 2
 #define MIN_CYCLE_CHECK_ITER 32  // Must be multiple of max cycle len
@@ -11,6 +13,8 @@
 // Fixed point with 6 bits to the left of the point.
 // Range [-32,32) with precision 2^-26
 typedef int32_t fixed_pt_t;
+
+#define ESCAPE_SQUARE (4<<26)
 
 static inline fixed_pt_t mul(fixed_pt_t a, fixed_pt_t b)
 {
@@ -79,32 +83,39 @@ void mandel_init()
   interp_set_config(interp0, 1, &cfg);
 }
 
-uint16_t generate(uint8_t* buff, int16_t rows, int16_t cols,
-                  uint16_t max_iter, uint16_t iter_offset, bool use_cycle_check,
-                  fixed_pt_t minx, fixed_pt_t maxx,
-                  fixed_pt_t miny, fixed_pt_t maxy)
+void init_fractal(FractalBuffer* f)
 {
-  uint8_t* buffptr = buff;
-  uint16_t min_iter = max_iter - 1;
-  fixed_pt_t incx = (maxx - minx) / (cols - 1);
-  fixed_pt_t incy = (maxy - miny) / (rows - 1);
-  fixed_pt_t escape_square = make_fixed(4);
+  f->min_iter = f->max_iter - 1;
+  f->iminx = make_fixedf(f->minx);
+  f->imaxx = make_fixedf(f->maxx);
+  f->iminy = make_fixedf(f->miny);
+  f->imaxy = make_fixedf(f->maxy);
+  f->incx = (f->imaxx - f->iminx) / (f->cols - 1);
+  f->incy = (f->imaxy - f->iminy) / (f->rows - 1);
+  f->count_inside = 0;
+  f->iend = f->cols - 1;
+  f->jend = f->rows - 1;
+}
+
+void generate_fractal(FractalBuffer* f)
+{
+  uint8_t* buffptr = f->buff;
 
   fixed_pt_t oldx, oldy;
-  uint16_t min_cycle_check_iter = use_cycle_check ? MIN_CYCLE_CHECK_ITER : 0xffff;
+  uint16_t min_cycle_check_iter = f->use_cycle_check ? MIN_CYCLE_CHECK_ITER : 0xffff;
 
-  fixed_pt_t y0 = miny;
-  for (int16_t i = 0; i < rows; ++i, y0 += incy) {
-    fixed_pt_t x0 = minx;
-    for (int16_t j = 0; j < cols; ++j, x0 += incx) {
+  fixed_pt_t y0 = f->iminy;
+  for (int16_t i = 0; i <= f->iend; ++i, y0 += f->incy) {
+    fixed_pt_t x0 = f->iminx;
+    for (int16_t j = 0; j < f->cols; ++j, x0 += f->incx) {
       fixed_pt_t x = x0;
       fixed_pt_t y = y0;
 
       uint16_t k = 1;
-      for (; k < max_iter; ++k) {
+      for (; k < f->max_iter; ++k) {
         fixed_pt_t x_square = square(x);
         fixed_pt_t y_square = square(y);
-        if (x_square + y_square > escape_square) break;
+        if (x_square + y_square > ESCAPE_SQUARE) break;
 
         if (k >= min_cycle_check_iter) {
           if ((k & (MAX_CYCLE_LEN - 1)) == 0) {
@@ -115,25 +126,25 @@ uint16_t generate(uint8_t* buff, int16_t rows, int16_t cols,
           {
             if ((uint32_t)(x - oldx) < (2*CYCLE_TOLERANCE) && (uint32_t)(y - oldy) < (2*CYCLE_TOLERANCE)) {
               // Found a cycle
-              k = max_iter;
+              k = f->max_iter;
               break;
             }
           }
         }
 
         fixed_pt_t nextx = x_square - y_square + x0;
-        //y = 2 * mul(x,y) + y0;
         y = mul2(x,y) + y0;
         x = nextx;
       }
-      if (k == max_iter) *buffptr++ = 0;
-      else {
-        if (k > iter_offset) k -= iter_offset;
+      if (k == f->max_iter) {
+        *buffptr++ = 0;
+        f->count_inside++;
+      } else {
+        if (k > f->iter_offset) k -= f->iter_offset;
         else k = 1;
         *buffptr++ = k;
-        if (min_iter > k) min_iter = k;
+        if (f->min_iter > k) f->min_iter = k;
       }
     }
   }
-  return min_iter;
 }
