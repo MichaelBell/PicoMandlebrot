@@ -375,6 +375,12 @@ int main()
           generate_steal_until_done(fractal_write);
         multicore_fifo_pop_blocking();
 
+        if (fractal_write->count_inside == IMAGE_COLS*IMAGE_ROWS) {
+          // Zoomed to completely inside the set.  Bail out
+          reset = true;
+          break;
+        }
+
         if (lastzoom && 
             minx >= fractal_read->minx &&
             maxx <= fractal_read->maxx &&
