@@ -6,12 +6,13 @@
 #include "hardware/interp.h"
 #include "hardware/dma.h"
 #include "hardware/clocks.h"
-#include "hardware/adc.h"
+#include "hardware/regs/rosc.h"
+#include "hardware/regs/addressmap.h"
 
 #include "mandelbrot.h"
 #include "st7789_lcd.h"
 
-#define USE_NUNCHUCK
+//#define USE_NUNCHUCK
 #ifdef USE_NUNCHUCK
 #include "nunchuck.h"
 #endif
@@ -51,14 +52,22 @@ void core1_entry() {
   }
 }
 
-void seed_random_from_temp()
+void seed_random_from_rosc()
 {
-  adc_init();
-  adc_set_temp_sensor_enabled(true);
-  adc_select_input(4);
-  uint temp = adc_read();
-  srand(temp);
-  adc_set_temp_sensor_enabled(false);
+  uint32_t random = 0;
+  uint32_t random_bit;
+  volatile uint32_t *rnd_reg = (uint32_t *)(ROSC_BASE + ROSC_RANDOMBIT_OFFSET);
+
+  for (int k = 0; k < 32; k++) {
+    while (1) {
+      random_bit = (*rnd_reg) & 1;
+      if (random_bit != ((*rnd_reg) & 1)) break;
+    }
+
+    random = (random << 1) | random_bit;
+  }
+
+  srand(random);
 } 
 
 void choose_init_zoomc(FractalBuffer* f, float* zoomx, float* zoomy)
@@ -100,7 +109,7 @@ void refine_zoomc(FractalBuffer* f, float* zoomx, float* zoomy)
   int steps = 1;
   int steps_to_do = steps;
 
-  while (steps < 16) {
+  while (steps < 24) {
     if (dir == 0) ++i;
     if (dir == 1) ++j;
     if (dir == 2) --i;
@@ -162,7 +171,7 @@ int main()
     nunchuck_init(12, 13);
 #endif
 
-    seed_random_from_temp();
+    seed_random_from_rosc();
 
     PIO pio = pio0;
     uint sm = 0;

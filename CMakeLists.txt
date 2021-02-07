@@ -25,8 +25,8 @@ add_executable(mandelbrot mandelbrot.c main.c st7789_lcd.c nunchuck.c)
 pico_set_program_name(mandelbrot "mandelbrot")
 pico_set_program_version(mandelbrot "0.1")
 
-pico_enable_stdio_uart(mandelbrot 0)
-pico_enable_stdio_usb(mandelbrot 1)
+pico_enable_stdio_uart(mandelbrot 1)
+pico_enable_stdio_usb(mandelbrot 0)
 
 pico_generate_pio_header(mandelbrot ${CMAKE_CURRENT_LIST_DIR}/st7789_lcd.pio)
 
@@ -40,7 +40,6 @@ target_link_libraries(mandelbrot
         hardware_pio
         hardware_interp
         hardware_i2c
-        hardware_adc
         hardware_dma
         pico_float pico_multicore
         )
