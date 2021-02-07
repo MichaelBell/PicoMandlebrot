@@ -40,6 +40,7 @@ target_link_libraries(mandelbrot
         hardware_pio
         hardware_interp
         hardware_i2c
+        hardware_adc
         hardware_dma
         pico_float pico_multicore
         )

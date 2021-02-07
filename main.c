@@ -6,6 +6,7 @@
 #include "hardware/interp.h"
 #include "hardware/dma.h"
 #include "hardware/clocks.h"
+#include "hardware/adc.h"
 
 #include "mandelbrot.h"
 #include "st7789_lcd.h"
@@ -50,6 +51,81 @@ void core1_entry() {
   }
 }
 
+void seed_random_from_temp()
+{
+  adc_init();
+  adc_set_temp_sensor_enabled(true);
+  adc_select_input(4);
+  uint temp = adc_read();
+  srand(temp);
+  adc_set_temp_sensor_enabled(false);
+} 
+
+void choose_init_zoomc(FractalBuffer* f, float* zoomx, float* zoomy)
+{
+  // Choose a random location that has exactly 1 neighbour inside the set
+  int chosen_i, chosen_j;
+  int choices = 0;
+  for (int i = 1; i < IMAGE_ROWS-1; ++i) {
+    for (int j = 1; j < IMAGE_COLS-1; ++j) {
+      if (f->buff[i * IMAGE_COLS + j] == 0) continue;
+      
+      int count = 0;
+      if (f->buff[(i-1) * IMAGE_COLS + j] == 0) count++;
+      if (f->buff[(i+1) * IMAGE_COLS + j] == 0) count++;
+      if (f->buff[i * IMAGE_COLS + j-1] == 0) count++;
+      if (f->buff[i * IMAGE_COLS + j+1] == 0) count++;
+      
+      if (count == 1) {
+        if (rand() % ++choices == 0) {
+          chosen_i = i;
+          chosen_j = j;
+        }
+      }
+    }
+  }
+
+  *zoomx = f->minx + chosen_j * (f->maxx - f->minx) / IMAGE_COLS;
+  *zoomy = f->miny + chosen_i * (f->maxy - f->miny) / IMAGE_ROWS;
+}
+
+void refine_zoomc(FractalBuffer* f, float* zoomx, float* zoomy)
+{
+  // Choose a centre that has a boundary between green and red pixels
+  // i.e. iteration number between 0x5f and 0x60
+  
+  int i = IMAGE_ROWS / 2;
+  int j = IMAGE_COLS / 2;
+  int dir = -1;
+  int steps = 1;
+  int steps_to_do = steps;
+
+  while (steps < 16) {
+    if (dir == 0) ++i;
+    if (dir == 1) ++j;
+    if (dir == 2) --i;
+    if (dir == 3) --j;
+    if (--steps_to_do == 0) {
+      if (dir == 1 || dir == 3) steps++;
+      if (++dir == 4) dir = 0;
+      steps_to_do = steps;
+    }
+
+    if ((f->buff[i * IMAGE_COLS + j] & 0x7e) != 0x4e) continue;
+
+    if (f->buff[(i-1) * IMAGE_COLS + j] >= 0x54 ||
+        f->buff[(i+1) * IMAGE_COLS + j] >= 0x54 ||
+        f->buff[i * IMAGE_COLS + j-1] >= 0x54 ||
+        f->buff[i * IMAGE_COLS + j+1] >= 0x54) {
+      *zoomx = f->minx + j * (f->maxx - f->minx) / IMAGE_COLS;
+      *zoomy = f->miny + i * (f->maxy - f->miny) / IMAGE_ROWS;
+      return;
+    }
+  }
+
+  // Don't change the zoom if the criteria weren't met
+}
+
 int main()
 {
     FractalBuffer* fractal_read;
@@ -86,6 +162,8 @@ int main()
     nunchuck_init(12, 13);
 #endif
 
+    seed_random_from_temp();
+
     PIO pio = pio0;
     uint sm = 0;
     st7789_init(pio, sm);
@@ -118,14 +196,19 @@ int main()
       else palette[i] = (i - 0xc0) >> 3;
     }
 
+#ifdef USE_NUNCHUCK
     float zoomx = ZOOM_CENTRE_X;
     float zoomy = ZOOM_CENTRE_Y;
+#else
+    float zoomx = -1.f;
+    float zoomy = 0.f;
+#endif
     const float zoomr = 0.85f * 0.5f;
     while (1) {
-      fractal1.minx = zoomx - 1.55f;
-      fractal1.maxx = zoomx + 1.55f;
-      fractal1.miny = zoomy - 1.3f;
-      fractal1.maxy = zoomy + 1.3f;
+      fractal1.minx = zoomx - 1.75f;
+      fractal1.maxx = zoomx + 1.75f;
+      fractal1.miny = zoomy - 1.6f;
+      fractal1.maxy = zoomy + 1.6f;
       float minx = fractal1.minx;
       float maxx = fractal1.maxx;
       float sizex = maxx - minx;
@@ -137,6 +220,10 @@ int main()
       multicore_fifo_push_blocking((uint32_t)&fractal1);
       multicore_fifo_pop_blocking();
       
+#ifndef USE_NUNCHUCK
+      choose_init_zoomc(&fractal1, &zoomx, &zoomy);
+#endif
+      
       fractal2.count_inside = IMAGE_ROWS*IMAGE_COLS;
       fractal_read = &fractal1;
       fractal_write = &fractal2;
@@ -144,12 +231,21 @@ int main()
       bool lastzoom = false;
 
       while (!reset) {
+#ifdef USE_NUNCHUCK
         lastzoom |= sizey < 0.0002f;
+#else
+        lastzoom |= sizey < 0.0003f;
+#endif
+        float next_zoomx = zoomx;
+        float next_zoomy = zoomy;
         if (!lastzoom) {
-          fractal_write->minx = zoomx - zoomr * sizex;
-          fractal_write->maxx = zoomx + zoomr * sizex;
-          fractal_write->miny = zoomy - zoomr * sizey;
-          fractal_write->maxy = zoomy + zoomr * sizey;
+#ifndef USE_NUNCHUCK
+          refine_zoomc(fractal_read, &next_zoomx, &next_zoomy);
+#endif
+          fractal_write->minx = next_zoomx - zoomr * sizex;
+          fractal_write->maxx = next_zoomx + zoomr * sizex;
+          fractal_write->miny = next_zoomy - zoomr * sizey;
+          fractal_write->maxy = next_zoomy + zoomr * sizey;
         } else {
           fractal_write->minx = minx;
           fractal_write->maxx = maxx;
@@ -172,11 +268,11 @@ int main()
         float zoomminy = zoomy - zoomr * (fractal_write->maxy - fractal_write->miny);
         float zoommaxy = zoomy + zoomr * (fractal_write->maxy - fractal_write->miny);
 
-        const float izoomr = 0.995f * 0.5f;
+        const float izoomr = 0.9955f * 0.5f;
 
         int iz = 1;
         absolute_time_t start_time = get_absolute_time();
-        for (; iz < 128; ++iz) {
+        for (; iz < 140; ++iz) {
           int imin = 0;
           int imax = DISPLAY_ROWS;
           int jmin = 0;
@@ -237,6 +333,11 @@ int main()
           if (zoomx < zoomminx) zoomx = zoomminx;
           if (zoomy > zoommaxy) zoomy = zoommaxy;
           if (zoomy < zoomminy) zoomy = zoomminy;
+#else
+          if (zoomx < next_zoomx) zoomx = MIN(next_zoomx, zoomx + sizex * 0.0005f);
+          if (zoomx > next_zoomx) zoomx = MAX(next_zoomx, zoomx - sizex * 0.0005f);
+          if (zoomy < next_zoomy) zoomy = MIN(next_zoomy, zoomy + sizey * 0.0005f);
+          if (zoomy > next_zoomy) zoomy = MAX(next_zoomy, zoomy - sizey * 0.0005f);
 #endif
 
           if (lastzoom || reset) break;
@@ -288,7 +389,7 @@ int main()
           if (nunchuck_zbutton()) break;
         }
 #else
-        sleep_ms(2000);
+        sleep_ms(1000);
 #endif
       }
     }
